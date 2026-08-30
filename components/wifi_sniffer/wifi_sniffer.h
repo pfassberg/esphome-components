@@ -6,34 +6,47 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
+
+namespace esphome {
+namespace wifi_sniffer {
 
 static const char *TAG = "sniffer_core";
-extern bool is_scanning;
-extern uint8_t min_chan;
-extern uint8_t max_chan;
-extern uint8_t current_chan;
+bool is_scanning = false;
+uint8_t min_chan = 1;
+uint8_t max_chan = 6;
+uint8_t current_chan = 1;
 
-inline bool is_scanning = false;
-inline uint8_t min_chan = 1;
-inline uint8_t max_chan = 6;
-inline uint8_t current_chan = 1;
-inline char rx_buffer[32];
-inline int rx_idx = 0;
+char rx_buffer[32];
+int rx_idx = 0;
 
-inline void wifi_packet_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
+void wifi_packet_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (type != WIFI_PKT_MGMT) return;
-    wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
-    uint8_t *payload = pkt->payload;
-    uint8_t frame_subtype = (payload[0] & 0xF0) >> 4;
 
-    if (frame_subtype == 0x04) {
-        ESP_LOGI(TAG, "[Ch %d] Probe Req from: %02X:%02X:%02X:%02X:%02X:%02X", 
-                 current_chan, payload[10], payload[11], payload[12], payload[13], payload[14], payload[15]);
+    wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    uint16_t len = pkt->rx_ctrl.sig_len;
+    uint8_t *payload = pkt->payload;
+
+    // Format output over Native USB CDC-ACM
+    // Header format: [MGMT][LEN:X][CHAN:Y]\n
+    char header[32];
+    int header_len = snprintf(header, sizeof(header), "[MGMT][LEN:%d][CHAN:%d]\n", len, current_chan);
+    usb_serial_jtag_write_bytes((const uint8_t*)header, header_len, portMAX_DELAY);
+
+    // Stream the raw payload bytes as hexadecimal string
+    for (uint16_t i = 0; i < len; i++) {
+        char hex[3];
+        snprintf(hex, sizeof(hex), "%02X", payload[i]);
+        usb_serial_jtag_write_bytes((const uint8_t*)hex, 2, portMAX_DELAY);
     }
+    // End the frame payload entry line
+    usb_serial_jtag_write_bytes((const uint8_t*)"\n", 1, portMAX_DELAY);
 }
 
-inline void sniffer_worker_task(void *pvParameters) {
+void sniffer_worker_task(void *pvParameters) {
     TickType_t last_hop_time = xTaskGetTickCount();
+    
+    // Setup regular hardware UART0 configuration to listen for the "reset" command
     uart_config_t uart_config = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
@@ -61,7 +74,7 @@ inline void sniffer_worker_task(void *pvParameters) {
                     esp_restart(); 
                 }
                 rx_idx = 0; 
-            } else if (rx_idx < (int)sizeof(rx_buffer) - 1) {
+            } else if (rx_idx < sizeof(rx_buffer) - 1) {
                 rx_buffer[rx_idx++] = data;
             }
         }
@@ -70,14 +83,24 @@ inline void sniffer_worker_task(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
-inline void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
+void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
     if (is_scanning) return;
-    if (s_chan > e_chan) { uint8_t temp = s_chan; s_chan = e_chan; e_chan = temp; }
+
+    if (s_chan > e_chan) {
+        uint8_t temp = s_chan; s_chan = e_chan; e_chan = temp;
+    }
 
     min_chan = s_chan;
     max_chan = e_chan;
     current_chan = s_chan;
     is_scanning = true;
+
+    // Initialize native hardware USB Serial JTAG peripheral driver
+    usb_serial_jtag_driver_config_t usb_config = {
+        .tx_buffer_size = 1024,
+        .rx_buffer_size = 512
+    };
+    usb_serial_jtag_driver_install(&usb_config);
 
     ESP_LOGW(TAG, "Disconnecting Wi-Fi. Entering Sniffer mode [Channels %d to %d]...", min_chan, max_chan);
     esp_wifi_stop();
@@ -91,7 +114,16 @@ inline void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
     esp_wifi_set_promiscuous_filter(&filter);
     esp_wifi_set_promiscuous_rx_cb(&wifi_packet_cb);
     esp_wifi_set_promiscuous(true);
+    
     esp_wifi_set_channel(current_chan, WIFI_SECOND_CHAN_NONE);
 
     xTaskCreatePinnedToCore(sniffer_worker_task, "sniffer_worker", 4096, NULL, 5, NULL, 1);
 }
+
+class WifiSniffer : public Component {
+ public:
+  void setup() override {}
+};
+
+} // namespace wifi_sniffer
+} // namespace esphome
