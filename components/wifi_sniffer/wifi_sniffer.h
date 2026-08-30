@@ -27,7 +27,7 @@ struct PacketData {
 };
 
 inline QueueHandle_t packet_queue = nullptr;
-inline char command_rx_buffer[32]; // Fixed explicitly allocated buffer size
+inline char command_rx_buffer[64]; // Explicitly sized command buffer
 inline int command_rx_idx = 0;
 
 class WifiSniffer : public Component {
@@ -54,7 +54,8 @@ inline void sniffer_worker_task(void *pvParameters) {
     TickType_t last_hop_time = xTaskGetTickCount();
     PacketData dequeued_pkt;
     
-    char output_header[64]; // Fixed buffer sizes
+    // EXPLICITLY ALLOCATED FIXED MEMORY LIMITS TO PREVENT STACK CORRUPTION CRASHES
+    char output_header[64]; 
     char hex_byte[4];
 
     while (is_scanning) {
@@ -66,7 +67,7 @@ inline void sniffer_worker_task(void *pvParameters) {
             last_hop_time = xTaskGetTickCount();
         }
 
-        // 2. Process Buffered Frames safely away from the Interrupt handler
+        // 2. Safely Process Buffered Frames
         while (xQueueReceive(packet_queue, &dequeued_pkt, pdMS_TO_TICKS(1)) == pdTRUE) {
             int header_len = snprintf(output_header, sizeof(output_header), 
                                       "[MGMT][LEN:%d][CHAN:%d]\n", 
@@ -80,7 +81,7 @@ inline void sniffer_worker_task(void *pvParameters) {
             usb_serial_jtag_write_bytes((const uint8_t*)"\n", 1, portMAX_DELAY);
         }
 
-        // 3. Native USB Command Listening Interface
+        // 3. Native USB Serial Input Command Controller
         uint8_t usb_byte;
         while (usb_serial_jtag_read_bytes(&usb_byte, 1, pdMS_TO_TICKS(1)) > 0) {
             if (usb_byte == '\n' || usb_byte == '\r') {
@@ -107,22 +108,13 @@ inline void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
     current_chan = s_chan;
     is_scanning = true;
 
-    // IMPORTANT: Prevent ESPHome from tracking Wi-Fi health and auto-rebooting
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);
-
     packet_queue = xQueueCreate(15, sizeof(PacketData));
 
-    // Force disconnect and turn off the automatic background reconnect handler
-    esp_wifi_disconnect();
-    
-    // Give background network socket layers time to clear
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    // Override promiscuous configurations directly
+    // Put into pure passive listening states directly
+    esp_wifi_set_promiscuous(true);
     wifi_promiscuous_filter_t filter = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
     esp_wifi_set_promiscuous_filter(&filter);
     esp_wifi_set_promiscuous_rx_cb(&wifi_packet_cb);
-    esp_wifi_set_promiscuous(true);
     
     esp_wifi_set_channel(current_chan, WIFI_SECOND_CHAN_NONE);
 
