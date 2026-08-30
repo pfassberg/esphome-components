@@ -15,12 +15,11 @@ namespace wifi_sniffer {
 
 static const char *TAG = "sniffer_core";
 
-// Use inline to prevent duplicate linking definitions
 inline bool is_scanning = false;
 inline uint8_t min_chan = 1;
 inline uint8_t max_chan = 6;
 inline uint8_t current_chan = 1;
-inline char rx_buffer[64];
+inline char rx_buffer[32];
 inline int rx_idx = 0;
 
 class WifiSniffer : public Component {
@@ -84,10 +83,10 @@ inline void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
     current_chan = s_chan;
     is_scanning = true;
 
-    // Gracefully drop connection via ESPHome's component manager
+    // Gracefully drop connection via ESPHome's component manager using the full namespace path
     #ifdef USE_WIFI
-    if (global_wifi_component != nullptr) {
-        global_wifi_component->stop();
+    if (esphome::wifi::global_wifi_component != nullptr) {
+        esphome::wifi::global_wifi_component->stop();
     }
     #endif
 
