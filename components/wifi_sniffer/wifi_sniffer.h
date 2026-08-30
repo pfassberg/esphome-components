@@ -83,17 +83,20 @@ inline void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
     current_chan = s_chan;
     is_scanning = true;
 
-    // Gracefully drop connection via ESPHome's component manager using the full namespace path
+    // Gracefully sever connection loops via native component actions
     #ifdef USE_WIFI
     if (esphome::wifi::global_wifi_component != nullptr) {
-        esphome::wifi::global_wifi_component->stop();
+        esphome::wifi::global_wifi_component->disconnect();
     }
     #endif
 
-    // Give ESPHome a brief moment to tear down dependencies safely
+    // Give ESPHome a brief moment to finish network tasks safely
     vTaskDelay(pdMS_TO_TICKS(200));
 
-    // Put standard Wi-Fi core into station mode explicitly without tracking loops
+    // Halt standard station interface stack fully
+    esp_wifi_stop();
+
+    // Re-initialize core registers independently for monitoring
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);
