@@ -1,8 +1,6 @@
 #pragma once
 
 #include "esphome/core/component.h"
-#include "esphome/core/application.h"
-#include "esphome/components/wifi/wifi_component.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -19,7 +17,7 @@ inline bool is_scanning = false;
 inline uint8_t min_chan = 1;
 inline uint8_t max_chan = 6;
 inline uint8_t current_chan = 1;
-inline char rx_buffer[32];
+inline char rx_buffer[32]; // Properly allocated fixed array size
 inline int rx_idx = 0;
 
 class WifiSniffer : public Component {
@@ -34,12 +32,12 @@ inline void wifi_packet_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     uint16_t len = pkt->rx_ctrl.sig_len; 
     uint8_t *payload = pkt->payload;
 
-    char header[64];
+    char header[64]; // Allocated array size buffer
     int header_len = snprintf(header, sizeof(header), "[MGMT][LEN:%d][CHAN:%d]\n", len, current_chan);
     usb_serial_jtag_write_bytes((const uint8_t*)header, header_len, portMAX_DELAY);
 
     for (uint16_t i = 0; i < len; i++) {
-        char hex[3];
+        char hex[3]; // Allocated array size for byte hex representation + null terminator
         snprintf(hex, sizeof(hex), "%02X", payload[i]);
         usb_serial_jtag_write_bytes((const uint8_t*)hex, 2, portMAX_DELAY);
     }
@@ -83,25 +81,11 @@ inline void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
     current_chan = s_chan;
     is_scanning = true;
 
-    // Gracefully sever connection loops via native component actions
-    #ifdef USE_WIFI
-    if (esphome::wifi::global_wifi_component != nullptr) {
-        esphome::wifi::global_wifi_component->disconnect();
-    }
-    #endif
+    // Disconnect from the current AP without destroying the core driver
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-    // Give ESPHome a brief moment to finish network tasks safely
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    // Halt standard station interface stack fully
-    esp_wifi_stop();
-
-    // Re-initialize core registers independently for monitoring
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_start();
-
+    // Configure and turn on promiscuous mode directly on the active interface
     wifi_promiscuous_filter_t filter = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
     esp_wifi_set_promiscuous_filter(&filter);
     esp_wifi_set_promiscuous_rx_cb(&wifi_packet_cb);
