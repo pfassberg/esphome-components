@@ -1,24 +1,34 @@
+#pragma once
+
+#include "esphome/core/component.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/usb_serial_jtag.h" // Use native hardware driver directly
+#include "driver/usb_serial_jtag.h"
 
 namespace esphome {
 namespace wifi_sniffer {
 
 static const char *TAG = "sniffer_core";
-bool is_scanning = false;
-uint8_t min_chan = 1;
-uint8_t max_chan = 6;
-uint8_t current_chan = 1;
+extern bool is_scanning;
+extern uint8_t min_chan;
+extern uint8_t max_chan;
+extern uint8_t current_chan;
+extern char rx_buffer[32];
+extern int rx_idx;
 
-char rx_buffer[32];
-int rx_idx = 0;
+// Declare the class that ESPHome is looking for
+class WifiSniffer : public Component {
+ public:
+  void setup() override {
+    // Left empty intentionally since initialization triggers from the button
+  }
+};
 
 // Raw Frame Packet Handler Callback
-void wifi_packet_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
+inline void wifi_packet_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (type != WIFI_PKT_MGMT) return;
 
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
@@ -39,8 +49,8 @@ void wifi_packet_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     usb_serial_jtag_write_bytes((const uint8_t*)"\n", 1, portMAX_DELAY);
 }
 
-// Thread-Safe Task handling Channel Hopping & ONLY Native USB Serial monitoring
-void sniffer_worker_task(void *pvParameters) {
+// Thread-Safe Task handling Channel Hopping & Native USB Serial monitoring
+inline void sniffer_worker_task(void *pvParameters) {
     TickType_t last_hop_time = xTaskGetTickCount();
     
     while (is_scanning) {
@@ -62,7 +72,7 @@ void sniffer_worker_task(void *pvParameters) {
                     esp_restart(); // Reboots cleanly back to ESPHome Wi-Fi state
                 }
                 rx_idx = 0; 
-            } else if (rx_idx < sizeof(rx_buffer) - 1) {
+            } else if (rx_idx < (int)sizeof(rx_buffer) - 1) {
                 rx_buffer[rx_idx++] = usb_data;
             }
         }
@@ -71,7 +81,7 @@ void sniffer_worker_task(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
-void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
+inline void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
     if (is_scanning) return;
 
     if (s_chan > e_chan) { uint8_t t = s_chan; s_chan = e_chan; e_chan = t; }
@@ -98,6 +108,25 @@ void start_promiscuous_sniffer(uint8_t s_chan, uint8_t e_chan) {
 
     xTaskCreatePinnedToCore(sniffer_worker_task, "sniffer_worker", 4096, NULL, 5, NULL, 1);
 }
+
+// Instantiate variables safely within context boundary
+#ifdef SNIFFER_CORE_MAIN
+  bool is_scanning = false;
+  uint8_t min_chan = 1;
+  uint8_t max_chan = 6;
+  uint8_t current_chan = 1;
+  char rx_buffer[32];
+  int rx_idx = 0;
+#else
+  // Fallbacks if parsed asynchronously
+  #define SNIFFER_CORE_MAIN
+  bool is_scanning = false;
+  uint8_t min_chan = 1;
+  uint8_t max_chan = 6;
+  uint8_t current_chan = 1;
+  char rx_buffer[32];
+  int rx_idx = 0;
+#endif
 
 } // namespace wifi_sniffer
 } // namespace esphome
